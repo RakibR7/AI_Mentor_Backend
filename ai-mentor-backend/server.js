@@ -1,241 +1,180 @@
-// server/server.js
-const express = require('express');
-const mongoose = require('mongoose');
-const cors = require('cors');
-const fetch = require('node-fetch'); // Ensure you're using node-fetch@2
-require('dotenv').config();
+require("dotenv").config();
+const express  = require("express");
+const mongoose = require("mongoose");
+const cors     = require("cors");
+const fetch    = require("node-fetch");      // v2
+const bcrypt   = require("bcryptjs");
+const jwt      = require("jsonwebtoken");
 
-const app = express();  // This needs to be defined at the top
-const PORT = process.env.PORT || 5000;
+const extra    = process.env.EXTRA_BCRYPT_STRING;
+const jwtKey   = process.env.JWT_STRING;
+const PORT     = process.env.PORT || 5000;
 
-// Connect to MongoDB
+/* ---------- DB ---------- */
 mongoose.connect(process.env.MONGODB_URI, {
-  useNewUrlParser: true,
-  useUnifiedTopology: true
+  useNewUrlParser:true, useUnifiedTopology:true
 })
-.then(() => console.log("Connected to MongoDB"))
-.catch((err) => console.error("MongoDB connection error:", err));
+.then(()=>console.log("MongoDB connected"))
+.catch(err=>console.error("Mongo error:",err));
 
-// Conversation Schema (same for all tutors)
-const conversationSchema = new mongoose.Schema({
-  title: String,
-  messages: [{
-    sender: String,
-    text: String,
-    timestamp: { type: Date, default: Date.now }
-  }],
-  model: String,
-  createdAt: { type: Date, default: Date.now }
+/* ---------- Schemas ---------- */
+const userSchema = new mongoose.Schema({
+  email   : { type:String, required:true, unique:true },
+  password: { type:String, required:true }
 });
+const User = mongoose.model("User", userSchema);
 
-// Helper: Get dynamic Conversation model for a given tutor
-function getConversationModel(tutor) {
-  const modelName = 'Conversation_' + tutor;
-  if (mongoose.models[modelName]) {
-    return mongoose.models[modelName];
-  }
-  // Third parameter is the collection name
-  return mongoose.model(modelName, conversationSchema, 'conversations_' + tutor);
+/* one collection per tutor */
+const conversationSchema = new mongoose.Schema({
+  title:String,
+  messages:[{
+    sender:String,
+    text:String,
+    timestamp:{ type:Date, default:Date.now }
+  }],
+  model:String,
+  createdAt:{ type:Date, default:Date.now }
+});
+function getConversationModel(tutor){
+  const name = "Conversation_"+tutor;
+  return mongoose.models[name] || mongoose.model(name, conversationSchema, "conversations_"+tutor);
 }
 
-// Middleware
+/* ---------- App ---------- */
+const app = express();
 app.use(express.json());
 app.use(cors());
 
-// GET all conversations for a specific tutor
-app.get('/api/conversations', async (req, res) => {
-  try {
-    const tutor = req.query.tutor;
-    if (!tutor) {
-      return res.status(400).json({ error: 'Tutor query parameter is required' });
-    }
-    const ConversationModel = getConversationModel(tutor);
-    const conversations = await ConversationModel.find().sort({ createdAt: -1 });
-    res.json(conversations);
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ error: 'Server error' });
+/* ===== AUTH ===== */
+app.post("/signup", async (req,res)=>{
+  const { email, pass } = req.body;
+  if(!email || !pass) return res.json({ success:false, message:"Email & password required" });
+
+  try{
+    const exists = await User.findOne({ email:email.trim().toLowerCase() });
+    if(exists) return res.json({ success:false, message:"Email already exists" });
+
+    const hash = await bcrypt.hash(pass + extra, 12);
+    await new User({ email:email.trim().toLowerCase(), password:hash }).save();
+    res.json({ success:true });
+  }catch(err){
+    console.error(err);
+    res.status(500).json({ success:false, message:"Server error" });
   }
 });
 
-// Create new conversation with tutor field
-app.post('/api/conversations', async (req, res) => {
-  try {
+app.post("/signin", async (req,res)=>{
+  const { email, pass } = req.body;
+  if(!email || !pass) return res.json({ success:false, message:"Email & password required" });
+
+  try{
+    const user = await User.findOne({ email:email.trim().toLowerCase() });
+    if(!user) return res.json({ success:false, message:"Invalid credentials" });
+
+    const ok = await bcrypt.compare(pass + extra, user.password);
+    if(!ok)   return res.json({ success:false, message:"Invalid credentials" });
+
+    const token = jwt.sign({ userId:user._id, email:user.email }, jwtKey, { expiresIn:"2h" });
+    res.json({ success:true, token, userId:user._id });
+  }catch(err){
+    console.error(err);
+    res.status(500).json({ success:false, message:"Server error" });
+  }
+});
+
+/* ===== Conversations ===== */
+app.get("/api/conversations", async (req,res)=>{
+  try{
+    const tutor = req.query.tutor;
+    if(!tutor) return res.status(400).json({ error:"Tutor query parameter is required" });
+    const Conv = getConversationModel(tutor);
+    const list = await Conv.find().sort({ createdAt:-1 });
+    res.json(list);
+  }catch(err){ console.error(err); res.status(500).json({ error:"Server error" }); }
+});
+
+app.post("/api/conversations", async (req,res)=>{
+  try{
     const { title, model, tutor } = req.body;
-    if (!tutor) {
-      return res.status(400).json({ error: 'Tutor is required' });
-    }
-    const ConversationModel = getConversationModel(tutor);
-    const newConversation = new ConversationModel({ title: title || "", model, messages: [] });
-    await newConversation.save();
-    res.status(201).json(newConversation);
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ error: 'Server error' });
-  }
+    if(!tutor) return res.status(400).json({ error:"Tutor is required" });
+    const Conv = getConversationModel(tutor);
+    const c = await new Conv({ title:title||"", model, messages:[] }).save();
+    res.status(201).json(c);
+  }catch(err){ console.error(err); res.status(500).json({ error:"Server error" }); }
 });
 
-// Add message to conversation and update title on first user message
-app.post('/api/messages', async (req, res) => {
-  try {
+app.post("/api/messages", async (req,res)=>{
+  try{
     const { conversationId, sender, text, model, tutor } = req.body;
-    if (!tutor) {
-      return res.status(400).json({ error: 'Tutor is required' });
+    if(!tutor) return res.status(400).json({ error:"Tutor is required" });
+    const Conv = getConversationModel(tutor);
+    const c = await Conv.findById(conversationId);
+    if(!c) return res.status(404).json({ error:"Conversation not found" });
+
+    if(c.messages.length === 0 && sender==="user"){
+      c.title = text.split(" ").slice(0,5).join(" ");
     }
-    const ConversationModel = getConversationModel(tutor);
-    const conversation = await ConversationModel.findById(conversationId);
-
-    if (!conversation) {
-      return res.status(404).json({ error: 'Conversation not found' });
-    }
-
-    // Update title on the first user message if not already set
-    if (conversation.messages.length === 0 && sender === "user") {
-      const newTitle = text.split(" ").slice(0, 5).join(" ");
-      conversation.title = newTitle;
-    }
-
-    conversation.messages.push({ sender, text });
-    conversation.model = model;
-    await conversation.save();
-
-    res.json(conversation);
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ error: 'Server error' });
-  }
+    c.messages.push({ sender, text });
+    c.model = model;
+    await c.save();
+    res.json(c);
+  }catch(err){ console.error(err); res.status(500).json({ error:"Server error" }); }
 });
 
-// Delete conversation (tutor passed as query parameter)
-app.delete('/api/conversations/:id', async (req, res) => {
-  try {
+app.delete("/api/conversations/:id", async (req,res)=>{
+  try{
     const tutor = req.query.tutor;
-    if (!tutor) {
-      return res.status(400).json({ error: 'Tutor query parameter is required' });
-    }
-    const ConversationModel = getConversationModel(tutor);
-    const conversation = await ConversationModel.findByIdAndDelete(req.params.id);
-    if (!conversation) {
-      return res.status(404).json({ error: 'Conversation not found' });
-    }
-    res.json({ message: 'Conversation deleted' });
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ error: 'Server error' });
-  }
+    if(!tutor) return res.status(400).json({ error:"Tutor query parameter is required" });
+    const Conv = getConversationModel(tutor);
+    const del = await Conv.findByIdAndDelete(req.params.id);
+    if(!del) return res.status(404).json({ error:"Conversation not found" });
+    res.json({ message:"Conversation deleted" });
+  }catch(err){ console.error(err); res.status(500).json({ error:"Server error" }); }
 });
 
-// OpenAI endpoint (updated to handle fine-tuned models)
-app.post('/api/openai', async (req, res) => {
+/* ===== OpenAI proxy ===== */
+app.post("/api/openai", async (req,res)=>{
   const { message, model, tutor } = req.body;
+  if(!message) return res.status(400).json({ error:"Message is required" });
 
-  if (!message) {
-    return res.status(400).json({ error: 'Message is required' });
-  }
+  /* tutor‑specific system prompt */
+  const tutorPrompts = {
+    biology : "You are a Biology tutor specialising in genetics, ecology, physiology.",
+    python  : "You are a Python programming tutor helping with syntax and debugging.",
+    maths   : "You are a Maths tutor covering algebra to calculus.",
+    english : "You are an English tutor focusing on grammar and literature."
+  };
+  const system = tutorPrompts[tutor] || `You are a ${tutor} tutor.`;
 
-  try {
-    // Check if the model is one of your fine-tuned models
-    const isFinetuned = model && model.startsWith('ft:');
-
-    // Create a tutor-specific system message
-    let systemMessage = '';
-    if (tutor === 'biology') {
-      systemMessage = 'You are a Biology tutor specializing in teaching biology concepts in an engaging and informative way. Answer questions about biology topics like cells, genetics, evolution, ecology, and human physiology.';
-    } else if (tutor === 'python') {
-      systemMessage = 'You are a Python programming tutor specializing in teaching coding concepts. Help students understand programming logic, syntax, debugging, and best practices in Python.';
-    } else if (tutor === 'maths') {
-      systemMessage = 'You are a Mathematics tutor specializing in teaching math concepts from basic arithmetic to advanced calculus, algebra, geometry, and statistics.';
-    } else if (tutor === 'english') {
-      systemMessage = 'You are an English tutor specializing in teaching grammar, vocabulary, writing, literature analysis, and reading comprehension.';
-    } else {
-      systemMessage = `You are a ${tutor} tutor specializing in teaching this subject in an engaging, informative way.`;
-    }
-
-    // Default to GPT-3.5-turbo if the model is missing or has an error
-    const modelToUse = model || "gpt-3.5-turbo";
-
-    console.log(`Using model: ${modelToUse} for tutor: ${tutor}`);
-
-    const response = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`
+  try{
+    const mdl   = model || "gpt-3.5-turbo";
+    const r = await fetch("https://api.openai.com/v1/chat/completions",{
+      method:"POST",
+      headers:{
+        "Content-Type":"application/json",
+        "Authorization":`Bearer ${process.env.OPENAI_API_KEY}`
       },
-      body: JSON.stringify({
-        model: modelToUse,
-        messages: [
-          // Always include a system message for better context
-          { role: "system", content: systemMessage },
-          { role: "user", content: message }
+      body:JSON.stringify({
+        model:mdl,
+        messages:[
+          { role:"system", content:system },
+          { role:"user",   content:message }
         ],
-        max_tokens: 500, // Increased for more detailed responses
-        temperature: 0.7 // Adjust as needed for creativity vs. precision
+        max_tokens:500,
+        temperature:0.7
       })
     });
-
-    if (!response.ok) {
-      const errorData = await response.json();
-      console.error('OpenAI API Error:', errorData);
-
-      // If there's a model error, fall back to GPT-3.5-turbo
-      if (errorData.error?.code === 'model_not_found') {
-        console.log('Model not found, falling back to gpt-3.5-turbo');
-
-        const fallbackResponse = await fetch('https://api.openai.com/v1/chat/completions', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`
-          },
-          body: JSON.stringify({
-            model: "gpt-3.5-turbo",
-            messages: [
-              { role: "system", content: systemMessage },
-              { role: "user", content: message }
-            ],
-            max_tokens: 500,
-            temperature: 0.7
-          })
-        });
-
-        if (!fallbackResponse.ok) {
-          const fallbackError = await fallbackResponse.json();
-          return res.status(fallbackResponse.status).json({
-            error: 'OpenAI API Error (fallback failed)',
-            details: fallbackError.error?.message || 'Unknown error'
-          });
-        }
-
-        const fallbackData = await fallbackResponse.json();
-        return res.json({ response: fallbackData.choices[0].message.content });
-      }
-
-      return res.status(response.status).json({
-        error: 'OpenAI API Error',
-        details: errorData.error?.message || 'Unknown error'
-      });
+    if(!r.ok){
+      const e = await r.json();
+      return res.status(r.status).json({ error:"OpenAI error", details:e });
     }
-
-    const data = await response.json();
-
-    if (!data.choices || !data.choices[0]?.message?.content) {
-      console.error('Unexpected API response:', data);
-      return res.status(500).json({
-        error: 'Unexpected response structure from OpenAI'
-      });
-    }
-
-    res.json({ response: data.choices[0].message.content });
-  } catch (error) {
-    console.error('Error communicating with OpenAI:', error);
-    res.status(500).json({
-      error: 'Error communicating with OpenAI',
-      details: error.message
-    });
+    const data = await r.json();
+    res.json({ response:data.choices[0].message.content });
+  }catch(err){
+    console.error(err);
+    res.status(500).json({ error:"OpenAI request failed" });
   }
 });
 
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`Server is running on port ${PORT}`);
-});
+/* ---------- start ---------- */
+app.listen(PORT,"0.0.0.0", ()=>console.log("Server running on",PORT));
