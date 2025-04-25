@@ -1,21 +1,24 @@
 require("dotenv").config();
-const express  = require("express");
+const express = require("express");
 const mongoose = require("mongoose");
-const cors     = require("cors");
-const fetch    = require("node-fetch");      // v2
-const bcrypt   = require("bcryptjs");
-const jwt      = require("jsonwebtoken");
+const cors = require("cors");
+const fetch = require("node-fetch");      // v2
+const bcrypt = require("bcryptjs");
+const jwt = require("jsonwebtoken");
+const multer = require("multer");
+const path = require("path");
+const fs = require("fs");
 
-const extra    = process.env.EXTRA_BCRYPT_STRING;
-const jwtKey   = process.env.JWT_STRING;
-const PORT     = process.env.PORT || 5000;
+const extra = process.env.EXTRA_BCRYPT_STRING;
+const jwtKey = process.env.JWT_STRING;
+const PORT = process.env.PORT || 5000;
 
 /* ---------- DB ---------- */
 mongoose.connect(process.env.MONGODB_URI, {
-  useNewUrlParser:true, useUnifiedTopology:true
+  useNewUrlParser: true, useUnifiedTopology: true
 })
-.then(()=>console.log("MongoDB connected"))
-.catch(err=>console.error("Mongo error:",err));
+.then(() => console.log("MongoDB connected"))
+.catch(err => console.error("Mongo error:", err));
 
 /* ---------- Schemas ---------- */
 const userSchema = new mongoose.Schema({
@@ -28,18 +31,19 @@ const User = mongoose.model("User", userSchema);
 
 /* one collection per tutor */
 const conversationSchema = new mongoose.Schema({
-  title:String,
-  messages:[{
-    sender:String,
-    text:String,
-    timestamp:{ type:Date, default:Date.now }
+  title: String,
+  messages: [{
+    sender: String,
+    text: String,
+    attachments: [String], // Array of file URLs
+    timestamp: { type: Date, default: Date.now }
   }],
-  model:String,
-  createdAt:{ type:Date, default:Date.now }
+  model: String,
+  createdAt: { type: Date, default: Date.now }
 });
-function getConversationModel(tutor){
-  const name = "Conversation_"+tutor;
-  return mongoose.models[name] || mongoose.model(name, conversationSchema, "conversations_"+tutor);
+function getConversationModel(tutor) {
+  const name = "Conversation_" + tutor;
+  return mongoose.models[name] || mongoose.model(name, conversationSchema, "conversations_" + tutor);
 }
 
 const performanceSchema = new mongoose.Schema({
@@ -74,10 +78,54 @@ function getPerformanceModel(userId) {
   return mongoose.models[name] || mongoose.model(name, performanceSchema, "performances_" + userId);
 }
 
+// File Upload Schema
+const uploadSchema = new mongoose.Schema({
+  userId: { type: String, required: true },
+  fileName: { type: String, required: true },
+  fileUrl: { type: String, required: true },
+  fileType: { type: String, required: true },
+  tutor: { type: String, required: true },
+  conversationId: { type: String, required: true },
+  createdAt: { type: Date, default: Date.now }
+});
+
+const Upload = mongoose.model("Upload", uploadSchema);
+
+// Learning Content Schema
+const learningContentSchema = new mongoose.Schema({
+  title: { type: String, required: true },
+  description: { type: String },
+  contentType: { type: String, required: true }, // 'flashcard', 'quiz', 'mcq'
+  attachmentUrl: { type: String, required: true },
+  userId: { type: String, required: true },
+  tutor: { type: String, required: true },
+  topicId: { type: String, required: true }, // Generated ID for topic reference
+  createdAt: { type: Date, default: Date.now }
+});
+
+const LearningContent = mongoose.model("LearningContent", learningContentSchema);
+
+// Set up multer for file storage
+const storage = multer.diskStorage({
+  destination: function(req, file, cb) {
+    const dir = './uploads';
+    if (!fs.existsSync(dir)){
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    cb(null, dir);
+  },
+  filename: function(req, file, cb) {
+    cb(null, Date.now() + path.extname(file.originalname));
+  }
+});
+
+const upload = multer({ storage: storage });
+
 /* ---------- App ---------- */
 const app = express();
 app.use(express.json());
 app.use(cors());
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 /* ===== AUTH ===== */
 // Sign up route
@@ -175,99 +223,113 @@ app.post("/reset-password", async (req, res) => {
 });
 
 /* ===== Conversations ===== */
-app.get("/api/conversations", async (req,res)=>{
-  try{
+app.get("/api/conversations", async (req, res) => {
+  try {
     const tutor = req.query.tutor;
-    if(!tutor) return res.status(400).json({ error:"Tutor query parameter is required" });
+    if (!tutor) return res.status(400).json({ error: "Tutor query parameter is required" });
     const Conv = getConversationModel(tutor);
-    const list = await Conv.find().sort({ createdAt:-1 });
+    const list = await Conv.find().sort({ createdAt: -1 });
     res.json(list);
-  }catch(err){ console.error(err); res.status(500).json({ error:"Server error" }); }
+  } catch (err) { console.error(err); res.status(500).json({ error: "Server error" }); }
 });
 
-app.post("/api/conversations", async (req,res)=>{
-  try{
+app.post("/api/conversations", async (req, res) => {
+  try {
     const { title, model, tutor } = req.body;
-    if(!tutor) return res.status(400).json({ error:"Tutor is required" });
+    if (!tutor) return res.status(400).json({ error: "Tutor is required" });
     const Conv = getConversationModel(tutor);
-    const c = await new Conv({ title:title||"", model, messages:[] }).save();
+    const c = await new Conv({ title: title || "", model, messages: [] }).save();
     res.status(201).json(c);
-  }catch(err){ console.error(err); res.status(500).json({ error:"Server error" }); }
+  } catch (err) { console.error(err); res.status(500).json({ error: "Server error" }); }
 });
 
-app.post("/api/messages", async (req,res)=>{
-  try{
-    const { conversationId, sender, text, model, tutor } = req.body;
-    if(!tutor) return res.status(400).json({ error:"Tutor is required" });
+app.post("/api/messages", async (req, res) => {
+  try {
+    const { conversationId, sender, text, model, tutor, attachments } = req.body;
+    if (!tutor) return res.status(400).json({ error: "Tutor is required" });
     const Conv = getConversationModel(tutor);
     const c = await Conv.findById(conversationId);
-    if(!c) return res.status(404).json({ error:"Conversation not found" });
+    if (!c) return res.status(404).json({ error: "Conversation not found" });
 
-    if(c.messages.length === 0 && sender==="user"){
-      c.title = text.split(" ").slice(0,5).join(" ");
+    if (c.messages.length === 0 && sender === "user") {
+      c.title = text.split(" ").slice(0, 5).join(" ");
     }
-    c.messages.push({ sender, text });
+
+    c.messages.push({
+      sender,
+      text,
+      attachments: attachments || [],
+      timestamp: new Date()
+    });
+
     c.model = model;
     await c.save();
     res.json(c);
-  }catch(err){ console.error(err); res.status(500).json({ error:"Server error" }); }
+  } catch (err) { console.error(err); res.status(500).json({ error: "Server error" }); }
 });
 
-app.delete("/api/conversations/:id", async (req,res)=>{
-  try{
+app.delete("/api/conversations/:id", async (req, res) => {
+  try {
     const tutor = req.query.tutor;
-    if(!tutor) return res.status(400).json({ error:"Tutor query parameter is required" });
+    if (!tutor) return res.status(400).json({ error: "Tutor query parameter is required" });
     const Conv = getConversationModel(tutor);
     const del = await Conv.findByIdAndDelete(req.params.id);
-    if(!del) return res.status(404).json({ error:"Conversation not found" });
-    res.json({ message:"Conversation deleted" });
-  }catch(err){ console.error(err); res.status(500).json({ error:"Server error" }); }
+    if (!del) return res.status(404).json({ error: "Conversation not found" });
+    res.json({ message: "Conversation deleted" });
+  } catch (err) { console.error(err); res.status(500).json({ error: "Server error" }); }
 });
 
 /* ===== OpenAI proxy ===== */
-app.post("/api/openai", async (req,res)=>{
-  const { message, model, tutor } = req.body;
-  if(!message) return res.status(400).json({ error:"Message is required" });
+app.post("/api/openai", async (req, res) => {
+  const { message, model, tutor, attachments } = req.body;
+  if (!message) return res.status(400).json({ error: "Message is required" });
 
   /* tutor‑specific system prompt */
   const tutorPrompts = {
-    biology : "You are a Biology tutor specialising in genetics, ecology, physiology.",
-    python  : "You are a Python programming tutor helping with syntax and debugging.",
-    maths   : "You are a Maths tutor covering algebra to calculus.",
-    english : "You are an English tutor focusing on grammar and literature."
+    biology: "You are a Biology tutor specialising in genetics, ecology, physiology.",
+    python: "You are a Python programming tutor helping with syntax and debugging.",
+    maths: "You are a Maths tutor covering algebra to calculus.",
+    english: "You are an English tutor focusing on grammar and literature."
   };
-  const system = tutorPrompts[tutor] || `You are a ${tutor} tutor.`;
 
-  try{
-    const mdl   = model || "gpt-3.5-turbo";
-    const r = await fetch("https://api.openai.com/v1/chat/completions",{
-      method:"POST",
-      headers:{
-        "Content-Type":"application/json",
-        "Authorization":`Bearer ${process.env.OPENAI_API_KEY}`
+  // Add context about attachments if they exist
+  let systemPrompt = tutorPrompts[tutor] || `You are a ${tutor} tutor.`;
+  if (attachments && attachments.length > 0) {
+    systemPrompt += ` The user has shared ${attachments.length} file(s) with you. `;
+    systemPrompt += `Please help them understand or analyze the content they've shared.`;
+  }
+
+  try {
+    const mdl = model || "gpt-3.5-turbo";
+    const r = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`
       },
-      body:JSON.stringify({
-        model:mdl,
-        messages:[
-          { role:"system", content:system },
-          { role:"user",   content:message }
+      body: JSON.stringify({
+        model: mdl,
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: message }
         ],
-        max_tokens:500,
-        temperature:0.7
+        max_tokens: 500,
+        temperature: 0.7
       })
     });
-    if(!r.ok){
+    if (!r.ok) {
       const e = await r.json();
-      return res.status(r.status).json({ error:"OpenAI error", details:e });
+      return res.status(r.status).json({ error: "OpenAI error", details: e });
     }
     const data = await r.json();
-    res.json({ response:data.choices[0].message.content });
-  }catch(err){
+    res.json({ response: data.choices[0].message.content });
+  } catch (err) {
     console.error(err);
-    res.status(500).json({ error:"OpenAI request failed" });
+    res.status(500).json({ error: "OpenAI request failed" });
   }
 });
 
+/* ===== Performance ===== */
 // Get user performance data
 app.get("/api/performance", async (req, res) => {
   try {
@@ -410,8 +472,8 @@ app.get("/api/progress/subtopics", async (req, res) => {
     const subtopicProgress = subtopics.map(subtopic => {
       const subtopicPerformance = performanceData.filter(
         perf => perf.subtopic === subtopic ||
-              perf.cards.some(card => card.subtopic === subtopic) ||
-              perf.sessions.some(session => session.subtopic === subtopic)
+          perf.cards.some(card => card.subtopic === subtopic) ||
+          perf.sessions.some(session => session.subtopic === subtopic)
       );
 
       let totalCards = 0;
@@ -446,9 +508,9 @@ app.get("/api/progress/subtopics", async (req, res) => {
       // Calculate mastery level (0-5)
       const masteryLevel = totalCards === 0 ? 0 :
         progressPercentage < 40 ? 1 :
-        progressPercentage < 60 ? 2 :
-        progressPercentage < 75 ? 3 :
-        progressPercentage < 90 ? 4 : 5;
+          progressPercentage < 60 ? 2 :
+            progressPercentage < 75 ? 3 :
+              progressPercentage < 90 ? 4 : 5;
 
       return {
         subtopic,
@@ -476,5 +538,110 @@ app.get("/api/progress/subtopics", async (req, res) => {
   }
 });
 
+/* ===== File Uploads and Learning Content ===== */
+
+// Handle file upload
+app.post("/api/upload", upload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ success: false, message: 'No file uploaded' });
+    }
+
+    const fileUrl = `${req.protocol}://${req.get('host')}/uploads/${req.file.filename}`;
+
+    // Save file reference to database
+    const newUpload = new Upload({
+      userId: req.body.userId || 'anonymous',
+      fileName: req.file.filename,
+      fileUrl: fileUrl,
+      fileType: req.file.mimetype,
+      tutor: req.body.tutor || 'general',
+      conversationId: req.body.conversationId || 'none'
+    });
+
+    await newUpload.save();
+    console.log('File uploaded:', fileUrl);
+
+    res.json({ success: true, fileUrl: fileUrl });
+  } catch (error) {
+    console.error('Upload error:', error);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+// Create learning content from attachment
+app.post("/api/learning-content", async (req, res) => {
+  try {
+    const { attachmentUrl, contentType, title, description, tutor, conversationId } = req.body;
+    const userId = req.body.userId || 'anonymous';
+
+    // Generate a unique topic ID
+    const topicId = `${contentType}_${Date.now()}`;
+
+    // Create the learning content
+    const newContent = new LearningContent({
+      title,
+      description,
+      contentType,
+      attachmentUrl,
+      userId,
+      tutor,
+      topicId
+    });
+
+    await newContent.save();
+    console.log('Learning content created:', { title, contentType, topicId });
+
+    res.json({
+      success: true,
+      message: 'Learning content created successfully',
+      topicId
+    });
+  } catch (error) {
+    console.error('Content creation error:', error);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+// Get learning content by topic ID
+app.get("/api/learning-content/:topicId", async (req, res) => {
+  try {
+    const content = await LearningContent.findOne({ topicId: req.params.topicId });
+
+    if (!content) {
+      return res.status(404).json({ success: false, message: 'Content not found' });
+    }
+
+    res.json({ success: true, content });
+  } catch (error) {
+    console.error('Error fetching content:', error);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+// Get all learning content for a user
+app.get("/api/learning-content", async (req, res) => {
+  try {
+    const { userId, tutor, contentType } = req.query;
+
+    const query = {};
+    if (userId) query.userId = userId;
+    if (tutor) query.tutor = tutor;
+    if (contentType) query.contentType = contentType;
+
+    const contents = await LearningContent.find(query).sort({ createdAt: -1 });
+
+    res.json({ success: true, contents });
+  } catch (error) {
+    console.error('Error fetching contents:', error);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+app.use(cors({
+  origin: ['http://localhost:3000', 'https://ai-mentor-r7.netlify.app'],
+  credentials: true
+}));
+
 /* ---------- start ---------- */
-app.listen(PORT,"0.0.0.0", ()=>console.log("Server running on",PORT));
+app.listen(PORT, "0.0.0.0", () => console.log("Server running on", PORT));
