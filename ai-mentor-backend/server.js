@@ -8,10 +8,29 @@ const jwt = require("jsonwebtoken");
 const multer = require("multer");
 const path = require("path");
 const fs = require("fs");
+const https = require("https");
+const http = require("http");
 
 const extra = process.env.EXTRA_BCRYPT_STRING;
 const jwtKey = process.env.JWT_STRING;
 const PORT = process.env.PORT || 5000;
+const HTTPS_PORT = process.env.HTTPS_PORT || 443;
+
+/* ---------- SSL CONFIGURATION ---------- */
+let sslOptions;
+try {
+  // Read SSL certificate files
+  sslOptions = {
+    key: fs.readFileSync('/etc/letsencrypt/live/api.teachmetutor.academy/privkey.pem'),
+    cert: fs.readFileSync('/etc/letsencrypt/live/api.teachmetutor.academy/fullchain.pem'),
+    ca: fs.readFileSync('/etc/letsencrypt/live/api.teachmetutor.academy/chain.pem')
+  };
+  console.log("SSL certificates loaded successfully");
+} catch (err) {
+  console.warn("SSL certificates not found or couldn't be loaded:", err.message);
+  console.warn("Starting in HTTP mode only");
+  sslOptions = null;
+}
 
 /* ---------- DB ---------- */
 mongoose.connect(process.env.MONGODB_URI, {
@@ -124,9 +143,28 @@ const upload = multer({ storage: storage });
 /* ---------- App ---------- */
 const app = express();
 app.use(express.json());
-app.use(cors());
-app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+app.use(cors({
+  origin: ['http://localhost:3000', 'https://teachmetutor.academy', 'https://www.teachmetutor.academy', 'https://ai-mentor-academy.netlify.app'],
+  credentials: true
+}));
 
+// Health check endpoint
+app.get('/ping', (req, res) => {
+  res.status(200).send('pong');
+});
+
+// HTTP to HTTPS redirect middleware (only when SSL is configured)
+if (sslOptions) {
+  app.use((req, res, next) => {
+    if (!req.secure && req.get('x-forwarded-proto') !== 'https') {
+      // Get the hostname from the request or default to your domain
+      const host = req.headers.host || 'teachmetutor.academy';
+      return res.redirect(`https://${host}${req.url}`);
+    }
+    next();
+  });
+}
+-
 /* ===== AUTH ===== */
 // Sign up route
 app.post("/signup", async (req, res) => {
@@ -547,7 +585,9 @@ app.post("/api/upload", upload.single('file'), async (req, res) => {
       return res.status(400).json({ success: false, message: 'No file uploaded' });
     }
 
-    const fileUrl = `${req.protocol}://${req.get('host')}/uploads/${req.file.filename}`;
+    // Use HTTPS protocol if we're configured for it
+    const protocol = sslOptions ? 'https' : 'http';
+    const fileUrl = `${protocol}://${req.get('host')}/uploads/${req.file.filename}`;
 
     // Save file reference to database
     const newUpload = new Upload({
@@ -638,10 +678,19 @@ app.get("/api/learning-content", async (req, res) => {
   }
 });
 
-app.use(cors({
-  origin: ['http://localhost:3000', 'https://ai-mentor-r7.netlify.app'],
-  credentials: true
-}));
+/* ---------- start servers ---------- */
+// Start HTTP server
+const httpServer = http.createServer(app);
+httpServer.listen(PORT, "0.0.0.0", () => {
+  console.log(`HTTP Server running on port ${PORT}`);
+});
 
-/* ---------- start ---------- */
-app.listen(PORT, "0.0.0.0", () => console.log("Server running on", PORT));
+// Start HTTPS server if SSL is configured
+if (sslOptions) {
+  const httpsServer = https.createServer(sslOptions, app);
+  httpsServer.listen(HTTPS_PORT, "0.0.0.0", () => {
+    console.log(`HTTPS Server running on port ${HTTPS_PORT}`);
+  });
+} else {
+  console.log("HTTPS Server not started: SSL certificates not configured");
+}
