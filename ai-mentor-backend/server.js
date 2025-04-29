@@ -51,7 +51,6 @@ const conversationSchema = new mongoose.Schema({
   messages: [{
     sender: String,
     text: String,
-    attachments: [String],
     timestamp: { type: Date, default: Date.now }
   }],
   model: String,
@@ -94,8 +93,6 @@ function getPerformanceModel(userId) {
   return mongoose.models[name] || mongoose.model(name, performanceSchema, "performances_" + userId);
 }
 
-const Upload = mongoose.model("Upload", uploadSchema);
-
 const learningContentSchema = new mongoose.Schema({
   title: { type: String, required: true },
   description: { type: String },
@@ -108,9 +105,6 @@ const learningContentSchema = new mongoose.Schema({
 })
 
 const LearningContent = mongoose.model("LearningContent", learningContentSchema);
-
-
-const upload = multer({ storage: storage });
 
 
 const app = express();
@@ -242,7 +236,7 @@ app.post("/api/conversations", async (req, res) => {
 
 app.post("/api/messages", async (req, res) => {
   try {
-    const { conversationId, sender, text, model, tutor, attachments } = req.body;
+    const { conversationId, sender, text, model, tutor } = req.body;
     if (!tutor) return res.status(400).json({ error: "Tutor is required" });
     const Conv = getConversationModel(tutor);
     const c = await Conv.findById(conversationId);
@@ -255,7 +249,6 @@ app.post("/api/messages", async (req, res) => {
     c.messages.push({
       sender,
       text,
-      attachments: attachments || [],
       timestamp: new Date()
     })
 
@@ -278,7 +271,7 @@ app.delete("/api/conversations/:id", async (req, res) => {
 
 
 app.post("/api/openai", async (req, res) => {
-  const { message, model, tutor, attachments } = req.body;
+  const { message, model, tutor } = req.body;
   if (!message) return res.status(400).json({ error: "Message is required" });
 
   const tutorPrompts = {
@@ -287,10 +280,6 @@ app.post("/api/openai", async (req, res) => {
   }
 
   let systemPrompt = tutorPrompts[tutor] || `You are a ${tutor} tutor.`;
-  if (attachments && attachments.length > 0) {
-    systemPrompt += ` The user has shared ${attachments.length} file(s) with you. `;
-    systemPrompt += `Please help them understand or analyze the content they've shared.`;
-  }
 
   try {
     const mdl = model || "gpt-3.5-turbo";
@@ -400,8 +389,12 @@ app.post("/api/performance", async (req, res) => {
           existingCard.subtopic = subtopic || existingCard.subtopic || 'general';
 
           const successRate = existingCard.correctAttempts / existingCard.attempts;
-          if (successRate > 0.8) existingCard.difficulty = Math.max(1, existingCard.difficulty - 1);
-          else if (successRate < 0.6) existingCard.difficulty = Math.min(5, existingCard.difficulty + 1);
+
+          if (successRate > 0.8) {
+            existingCard.difficulty = Math.max(1, existingCard.difficulty - 1);
+          } else if (successRate < 0.6) {
+            existingCard.difficulty = Math.min(5, existingCard.difficulty + 1);
+          }
 
           performance.cards[existingCardIndex] = existingCard;
         } else {
@@ -479,15 +472,25 @@ app.get("/api/progress/subtopics", async (req, res) => {
         })
       })
 
-      const progressPercentage = totalCards > 0
-        ? Math.min(100, Math.round((correctCards / totalCards) * 100))
-        : 0;
+      let progressPercentage = 0;
+      if (totalCards > 0) {
+        progressPercentage = Math.min(100, Math.round((correctCards / totalCards) * 100));
+      }
 
-      const masteryLevel = totalCards === 0 ? 0 :
-        progressPercentage < 40 ? 1 :
-          progressPercentage < 60 ? 2 :
-            progressPercentage < 75 ? 3 :
-              progressPercentage < 90 ? 4 : 5;
+      let masteryLevel = 0;
+      if (totalCards === 0) {
+        masteryLevel = 0;
+      } else if (progressPercentage < 40) {
+        masteryLevel = 1;
+      } else if (progressPercentage < 60) {
+        masteryLevel = 2;
+      } else if (progressPercentage < 75) {
+        masteryLevel = 3;
+      } else if (progressPercentage < 90) {
+        masteryLevel = 4;
+      } else {
+        masteryLevel = 5;
+      }
 
       return {
         subtopic,
@@ -499,9 +502,10 @@ app.get("/api/progress/subtopics", async (req, res) => {
       }
     })
 
-    const totalProgress = subtopicProgress.length > 0
-      ? Math.round(subtopicProgress.reduce((sum, item) => sum + item.progress, 0) / subtopicProgress.length)
-      : 0;
+    let totalProgress = 0;
+    if (subtopicProgress.length > 0) {
+      totalProgress = Math.round(subtopicProgress.reduce((sum, item) => sum + item.progress, 0) / subtopicProgress.length);
+    }
 
     res.json({
       subtopics: subtopicProgress,
@@ -558,7 +562,7 @@ app.get("/api/learning-content/:topicId", async (req, res) => {
     console.error('Error fetching content:', error);
     res.status(500).json({ success: false, message: 'Server error' });
   }
-});
+})
 
 app.get("/api/learning-content", async (req, res) => {
   try {
@@ -577,7 +581,6 @@ app.get("/api/learning-content", async (req, res) => {
     res.status(500).json({ success: false, message: 'Server error' });
   }
 })
-
 
 const httpServer = http.createServer(app);
 httpServer.listen(PORT, "0.0.0.0", () => {
