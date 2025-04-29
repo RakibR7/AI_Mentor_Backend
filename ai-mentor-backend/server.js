@@ -12,7 +12,7 @@ const http = require("http");
 
 const extra = process.env.EXTRA_BCRYPT_STRING;
 const jwtKey = process.env.JWT_STRING;
-const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT || 3000;
 const HTTPS_PORT = process.env.HTTPS_PORT || 443;
 
 let sslOptions;
