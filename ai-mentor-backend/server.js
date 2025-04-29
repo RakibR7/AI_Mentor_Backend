@@ -51,7 +51,6 @@ const conversationSchema = new mongoose.Schema({
   messages: [{
     sender: String,
     text: String,
-    attachments: [String],
     timestamp: { type: Date, default: Date.now }
   }],
   model: String,
@@ -106,6 +105,7 @@ const learningContentSchema = new mongoose.Schema({
 })
 
 const LearningContent = mongoose.model("LearningContent", learningContentSchema);
+
 
 const app = express();
 app.use(express.json());
@@ -236,7 +236,7 @@ app.post("/api/conversations", async (req, res) => {
 
 app.post("/api/messages", async (req, res) => {
   try {
-    const { conversationId, sender, text, model, tutor, attachments } = req.body;
+    const { conversationId, sender, text, model, tutor } = req.body;
     if (!tutor) return res.status(400).json({ error: "Tutor is required" });
     const Conv = getConversationModel(tutor);
     const c = await Conv.findById(conversationId);
@@ -249,7 +249,6 @@ app.post("/api/messages", async (req, res) => {
     c.messages.push({
       sender,
       text,
-      attachments: attachments || [],
       timestamp: new Date()
     })
 
@@ -272,7 +271,7 @@ app.delete("/api/conversations/:id", async (req, res) => {
 
 
 app.post("/api/openai", async (req, res) => {
-  const { message, model, tutor, attachments } = req.body;
+  const { message, model, tutor } = req.body;
   if (!message) return res.status(400).json({ error: "Message is required" });
 
   const tutorPrompts = {
@@ -281,10 +280,6 @@ app.post("/api/openai", async (req, res) => {
   }
 
   let systemPrompt = tutorPrompts[tutor] || `You are a ${tutor} tutor.`;
-  if (attachments && attachments.length > 0) {
-    systemPrompt += ` The user has shared ${attachments.length} file(s) with you. `;
-    systemPrompt += `Please help them understand or analyze the content they've shared.`;
-  }
 
   try {
     const mdl = model || "gpt-3.5-turbo";
@@ -481,6 +476,7 @@ app.get("/api/progress/subtopics", async (req, res) => {
       if (totalCards > 0) {
         progressPercentage = Math.min(100, Math.round((correctCards / totalCards) * 100));
       }
+
       let masteryLevel = 0;
       if (totalCards === 0) {
         masteryLevel = 0;
@@ -514,7 +510,7 @@ app.get("/api/progress/subtopics", async (req, res) => {
     res.json({
       subtopics: subtopicProgress,
       overall: totalProgress
-    })
+    });
 
   } catch (err) {
     console.error('Error in GET /api/progress/subtopics:', err);
@@ -585,7 +581,6 @@ app.get("/api/learning-content", async (req, res) => {
     res.status(500).json({ success: false, message: 'Server error' });
   }
 })
-
 
 const httpServer = http.createServer(app);
 httpServer.listen(PORT, "0.0.0.0", () => {
