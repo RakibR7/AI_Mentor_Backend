@@ -2,10 +2,9 @@ require("dotenv").config();
 const express = require("express");
 const mongoose = require("mongoose");
 const cors = require("cors");
-const fetch = require("node-fetch");      // v2
+const fetch = require("node-fetch");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
-const multer = require("multer");
 const path = require("path");
 const fs = require("fs");
 const https = require("https");
@@ -16,10 +15,8 @@ const jwtKey = process.env.JWT_STRING;
 const PORT = process.env.PORT || 5000;
 const HTTPS_PORT = process.env.HTTPS_PORT || 443;
 
-/* ---------- SSL CONFIGURATION ---------- */
 let sslOptions;
 try {
-  // Read SSL certificate files
   sslOptions = {
     key: fs.readFileSync('/etc/letsencrypt/live/api.teachmetutor.academy/privkey.pem'),
     cert: fs.readFileSync('/etc/letsencrypt/live/api.teachmetutor.academy/fullchain.pem'),
@@ -32,34 +29,34 @@ try {
   sslOptions = null;
 }
 
-/* ---------- DB ---------- */
+
 mongoose.connect(process.env.MONGODB_URI, {
   useNewUrlParser: true, useUnifiedTopology: true
 })
 .then(() => console.log("MongoDB connected"))
 .catch(err => console.error("Mongo error:", err));
 
-/* ---------- Schemas ---------- */
+
 const userSchema = new mongoose.Schema({
   email: { type: String, required: true, unique: true },
   password: { type: String, required: true },
   fullName: { type: String, required: true, default: '' },
   createdAt: { type: Date, default: Date.now }
-});
+})
 const User = mongoose.model("User", userSchema);
 
-/* one collection per tutor */
+
 const conversationSchema = new mongoose.Schema({
   title: String,
   messages: [{
     sender: String,
     text: String,
-    attachments: [String], // Array of file URLs
+    attachments: [String],
     timestamp: { type: Date, default: Date.now }
   }],
   model: String,
   createdAt: { type: Date, default: Date.now }
-});
+})
 function getConversationModel(tutor) {
   const name = "Conversation_" + tutor;
   return mongoose.models[name] || mongoose.model(name, conversationSchema, "conversations_" + tutor);
@@ -69,104 +66,76 @@ const performanceSchema = new mongoose.Schema({
   userId: { type: String, required: true },
   tutor: { type: String, required: true },
   topic: { type: String, required: true },
-  subtopic: { type: String, default: 'general' }, // Added subtopic field
+  subtopic: { type: String, default: 'general' },
   activityType: { type: String, enum: ['flashcard', 'quiz'], required: true },
   cards: [{
     cardId: String,
     question: String,
     answer: String,
-    subtopic: { type: String, default: 'general' }, // Added subtopic for cards
+    subtopic: { type: String, default: 'general' },
     attempts: { type: Number, default: 0 },
     correctAttempts: { type: Number, default: 0 },
     lastAttempt: { type: Date, default: Date.now },
-    difficulty: { type: Number, default: 3 }, // 1-5 scale
+    difficulty: { type: Number, default: 3 },
   }],
   sessions: [{
     date: { type: Date, default: Date.now },
-    subtopic: { type: String, default: 'general' }, // Added subtopic for sessions
+    subtopic: { type: String, default: 'general' },
     cardsStudied: Number,
     correctAnswers: Number,
-    timeSpent: Number, // in seconds
+    timeSpent: Number,
   }],
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now }
-});
+})
 
 function getPerformanceModel(userId) {
   const name = "Performance_" + userId;
   return mongoose.models[name] || mongoose.model(name, performanceSchema, "performances_" + userId);
 }
 
-// File Upload Schema
-const uploadSchema = new mongoose.Schema({
-  userId: { type: String, required: true },
-  fileName: { type: String, required: true },
-  fileUrl: { type: String, required: true },
-  fileType: { type: String, required: true },
-  tutor: { type: String, required: true },
-  conversationId: { type: String, required: true },
-  createdAt: { type: Date, default: Date.now }
-});
-
 const Upload = mongoose.model("Upload", uploadSchema);
 
-// Learning Content Schema
 const learningContentSchema = new mongoose.Schema({
   title: { type: String, required: true },
   description: { type: String },
-  contentType: { type: String, required: true }, // 'flashcard', 'quiz', 'mcq'
+  contentType: { type: String, required: true },
   attachmentUrl: { type: String, required: true },
   userId: { type: String, required: true },
   tutor: { type: String, required: true },
-  topicId: { type: String, required: true }, // Generated ID for topic reference
+  topicId: { type: String, required: true },
   createdAt: { type: Date, default: Date.now }
-});
+})
 
 const LearningContent = mongoose.model("LearningContent", learningContentSchema);
 
-// Set up multer for file storage
-const storage = multer.diskStorage({
-  destination: function(req, file, cb) {
-    const dir = './uploads';
-    if (!fs.existsSync(dir)){
-      fs.mkdirSync(dir, { recursive: true });
-    }
-    cb(null, dir);
-  },
-  filename: function(req, file, cb) {
-    cb(null, Date.now() + path.extname(file.originalname));
-  }
-});
 
 const upload = multer({ storage: storage });
 
-/* ---------- App ---------- */
+
 const app = express();
 app.use(express.json());
 app.use(cors({
   origin: ['http://localhost:3000', 'https://teachmetutor.academy', 'https://www.teachmetutor.academy', 'https://ai-mentor-academy.netlify.app'],
   credentials: true
-}));
+}))
 
-// Health check endpoint
 app.get('/ping', (req, res) => {
   res.status(200).send('pong');
-});
+})
 
-// HTTP to HTTPS redirect middleware (only when SSL is configured)
+
 if (sslOptions) {
   app.use((req, res, next) => {
     if (!req.secure && req.get('x-forwarded-proto') !== 'https') {
-      // Get the hostname from the request or default to your domain
       const host = req.headers.host || 'teachmetutor.academy';
       return res.redirect(`https://${host}${req.url}`);
     }
-    next();
-  });
+    next()
+  })
 }
--
-/* ===== AUTH ===== */
-// Sign up route
+
+
 app.post("/signup", async (req, res) => {
   const { email, pass, fullName } = req.body;
   console.log("Signup request:", { email, fullName });
@@ -194,7 +163,7 @@ app.post("/signup", async (req, res) => {
     console.error("Signup error:", err);
     res.status(500).json({ success: false, message: "Server error" });
   }
-});
+})
 
 app.post("/signin", async (req, res) => {
   const { email, pass } = req.body;
@@ -231,9 +200,8 @@ app.post("/signin", async (req, res) => {
     console.error("Signin error:", err);
     res.status(500).json({ success: false, message: "Server error" });
   }
-});
+})
 
-// Password reset request
 app.post("/reset-password", async (req, res) => {
   const { email } = req.body;
   if (!email) {
@@ -243,24 +211,15 @@ app.post("/reset-password", async (req, res) => {
   try {
     const user = await User.findOne({ email: email.trim().toLowerCase() });
     if (!user) {
-      // For security, don't reveal if the email exists or not
       return res.json({ success: true, message: "If your email is in our system, you'll receive reset instructions" });
     }
-
-    // Generate a password reset token (would implement email sending here)
-    // In a real implementation, you would:
-    // 1. Generate a unique token
-    // 2. Store it in the database with an expiration time
-    // 3. Send an email with a link containing the token
-
     res.json({ success: true, message: "Password reset instructions sent" });
   } catch (err) {
     console.error(err);
     res.status(500).json({ success: false, message: "Server error" });
   }
-});
+})
 
-/* ===== Conversations ===== */
 app.get("/api/conversations", async (req, res) => {
   try {
     const tutor = req.query.tutor;
@@ -269,7 +228,7 @@ app.get("/api/conversations", async (req, res) => {
     const list = await Conv.find().sort({ createdAt: -1 });
     res.json(list);
   } catch (err) { console.error(err); res.status(500).json({ error: "Server error" }); }
-});
+})
 
 app.post("/api/conversations", async (req, res) => {
   try {
@@ -279,7 +238,7 @@ app.post("/api/conversations", async (req, res) => {
     const c = await new Conv({ title: title || "", model, messages: [] }).save();
     res.status(201).json(c);
   } catch (err) { console.error(err); res.status(500).json({ error: "Server error" }); }
-});
+})
 
 app.post("/api/messages", async (req, res) => {
   try {
@@ -298,13 +257,13 @@ app.post("/api/messages", async (req, res) => {
       text,
       attachments: attachments || [],
       timestamp: new Date()
-    });
+    })
 
     c.model = model;
     await c.save();
     res.json(c);
   } catch (err) { console.error(err); res.status(500).json({ error: "Server error" }); }
-});
+})
 
 app.delete("/api/conversations/:id", async (req, res) => {
   try {
@@ -315,22 +274,18 @@ app.delete("/api/conversations/:id", async (req, res) => {
     if (!del) return res.status(404).json({ error: "Conversation not found" });
     res.json({ message: "Conversation deleted" });
   } catch (err) { console.error(err); res.status(500).json({ error: "Server error" }); }
-});
+})
 
-/* ===== OpenAI proxy ===== */
+
 app.post("/api/openai", async (req, res) => {
   const { message, model, tutor, attachments } = req.body;
   if (!message) return res.status(400).json({ error: "Message is required" });
 
-  /* tutor‑specific system prompt */
   const tutorPrompts = {
     biology: "You are a Biology tutor specialising in genetics, ecology, physiology.",
     python: "You are a Python programming tutor helping with syntax and debugging.",
-    maths: "You are a Maths tutor covering algebra to calculus.",
-    english: "You are an English tutor focusing on grammar and literature."
-  };
+  }
 
-  // Add context about attachments if they exist
   let systemPrompt = tutorPrompts[tutor] || `You are a ${tutor} tutor.`;
   if (attachments && attachments.length > 0) {
     systemPrompt += ` The user has shared ${attachments.length} file(s) with you. `;
@@ -354,7 +309,7 @@ app.post("/api/openai", async (req, res) => {
         max_tokens: 500,
         temperature: 0.7
       })
-    });
+    })
     if (!r.ok) {
       const e = await r.json();
       return res.status(r.status).json({ error: "OpenAI error", details: e });
@@ -365,16 +320,15 @@ app.post("/api/openai", async (req, res) => {
     console.error(err);
     res.status(500).json({ error: "OpenAI request failed" });
   }
-});
+})
 
-/* ===== Performance ===== */
-// Get user performance data
+
 app.get("/api/performance", async (req, res) => {
   try {
     const { userId, tutor, topic, subtopic, activityType } = req.query;
     if (!userId) return res.status(400).json({ error: "UserId is required" });
 
-    console.log('Performance query params:', req.query); // Debug log
+    console.log('Performance query params:', req.query);
 
     const Performance = getPerformanceModel(userId);
     const query = { userId };
@@ -383,49 +337,45 @@ app.get("/api/performance", async (req, res) => {
     if (subtopic) query.subtopic = subtopic;
     if (activityType) query.activityType = activityType;
 
-    console.log('Performance MongoDB query:', query); // Debug log
+    console.log('Performance MongoDB query:', query);
 
     const performanceData = await Performance.find(query).sort({ updatedAt: -1 });
-    console.log(`Found ${performanceData.length} performance records`); // Debug log
+    console.log(`Found ${performanceData.length} performance records`);
 
     res.json(performanceData);
   } catch (err) {
     console.error('Error in GET /api/performance:', err);
     res.status(500).json({ error: "Server error" });
   }
-});
+})
 
-// Update performance after a session
+
 app.post("/api/performance", async (req, res) => {
   try {
     const { userId, tutor, topic, subtopic, activityType, sessionData, cardsData } = req.body;
-    console.log('Received performance update:', req.body); // Debug log
+    console.log('Received performance update:', req.body);
 
     if (!userId || !tutor || !topic || !activityType) {
       return res.status(400).json({ error: "Missing required fields" });
     }
 
     const Performance = getPerformanceModel(userId);
-
-    // Find existing performance document or create new one
     let performance = await Performance.findOne({
       userId, tutor, topic, subtopic: subtopic || 'general', activityType
-    });
+    })
 
     if (!performance) {
-      console.log('Creating new performance record'); // Debug log
+      console.log('Creating new performance record');
       performance = new Performance({
         userId, tutor, topic,
         subtopic: subtopic || 'general',
         activityType,
         cards: [],
         sessions: []
-      });
+      })
     } else {
-      console.log('Updating existing performance record'); // Debug log
+      console.log('Updating existing performance record');
     }
-
-    // Add new session data
     if (sessionData) {
       performance.sessions.push({
         date: new Date(),
@@ -433,32 +383,28 @@ app.post("/api/performance", async (req, res) => {
         cardsStudied: sessionData.cardsStudied,
         correctAnswers: sessionData.correctAnswers,
         timeSpent: sessionData.timeSpent
-      });
+      })
     }
 
-    // Update cards data
     if (cardsData && cardsData.length > 0) {
       for (const newCard of cardsData) {
         const existingCardIndex = performance.cards.findIndex(
           card => card.cardId === newCard.cardId
-        );
+        )
 
         if (existingCardIndex >= 0) {
-          // Update existing card
           const existingCard = performance.cards[existingCardIndex];
           existingCard.attempts += newCard.attempts || 1;
           existingCard.correctAttempts += newCard.correctAttempts || 0;
           existingCard.lastAttempt = new Date();
           existingCard.subtopic = subtopic || existingCard.subtopic || 'general';
 
-          // Adjust difficulty based on correctness
           const successRate = existingCard.correctAttempts / existingCard.attempts;
           if (successRate > 0.8) existingCard.difficulty = Math.max(1, existingCard.difficulty - 1);
           else if (successRate < 0.6) existingCard.difficulty = Math.min(5, existingCard.difficulty + 1);
 
           performance.cards[existingCardIndex] = existingCard;
         } else {
-          // Add new card
           performance.cards.push({
             cardId: newCard.cardId,
             question: newCard.question,
@@ -467,24 +413,24 @@ app.post("/api/performance", async (req, res) => {
             attempts: newCard.attempts || 1,
             correctAttempts: newCard.correctAttempts || 0,
             lastAttempt: new Date(),
-            difficulty: 3 // Default medium difficulty
-          });
+            difficulty: 3
+          })
         }
       }
     }
 
     performance.updatedAt = new Date();
     const savedPerformance = await performance.save();
-    console.log('Performance saved successfully'); // Debug log
+    console.log('Performance saved successfully');
 
     res.status(201).json(savedPerformance);
   } catch (err) {
     console.error('Error in POST /api/performance:', err);
     res.status(500).json({ error: "Server error" });
   }
-});
+})
 
-// Get subtopic progress summary
+
 app.get("/api/progress/subtopics", async (req, res) => {
   try {
     const { userId, tutor } = req.query;
@@ -493,57 +439,50 @@ app.get("/api/progress/subtopics", async (req, res) => {
     }
 
     const Performance = getPerformanceModel(userId);
-
-    // Get all performance records for this tutor/user
     const performanceData = await Performance.find({ userId, tutor });
 
-    // Get unique subtopics
+
     const subtopics = [...new Set(
       performanceData.flatMap(perf => [
         perf.subtopic,
         ...perf.cards.map(card => card.subtopic),
         ...perf.sessions.map(session => session.subtopic)
       ]).filter(Boolean)
-    )];
+    )]
 
-    // Calculate progress for each subtopic
     const subtopicProgress = subtopics.map(subtopic => {
       const subtopicPerformance = performanceData.filter(
         perf => perf.subtopic === subtopic ||
           perf.cards.some(card => card.subtopic === subtopic) ||
           perf.sessions.some(session => session.subtopic === subtopic)
-      );
+      )
 
       let totalCards = 0;
       let correctCards = 0;
       let sessionsCount = 0;
 
       subtopicPerformance.forEach(perf => {
-        // Count sessions
         sessionsCount += perf.sessions.filter(s => s.subtopic === subtopic).length;
 
-        // Count from cards
         perf.cards.forEach(card => {
           if (card.subtopic === subtopic) {
             totalCards += card.attempts || 0;
             correctCards += card.correctAttempts || 0;
           }
-        });
+        })
 
-        // Count from sessions
         perf.sessions.forEach(session => {
           if (session.subtopic === subtopic) {
             totalCards += session.cardsStudied || 0;
             correctCards += session.correctAnswers || 0;
           }
-        });
-      });
+        })
+      })
 
       const progressPercentage = totalCards > 0
         ? Math.min(100, Math.round((correctCards / totalCards) * 100))
         : 0;
 
-      // Calculate mastery level (0-5)
       const masteryLevel = totalCards === 0 ? 0 :
         progressPercentage < 40 ? 1 :
           progressPercentage < 60 ? 2 :
@@ -557,10 +496,9 @@ app.get("/api/progress/subtopics", async (req, res) => {
         totalCards,
         correctCards,
         sessionsCount
-      };
-    });
+      }
+    })
 
-    // Calculate overall progress
     const totalProgress = subtopicProgress.length > 0
       ? Math.round(subtopicProgress.reduce((sum, item) => sum + item.progress, 0) / subtopicProgress.length)
       : 0;
@@ -574,51 +512,14 @@ app.get("/api/progress/subtopics", async (req, res) => {
     console.error('Error in GET /api/progress/subtopics:', err);
     res.status(500).json({ error: "Server error" });
   }
-});
+})
 
-/* ===== File Uploads and Learning Content ===== */
-
-// Handle file upload
-app.post("/api/upload", upload.single('file'), async (req, res) => {
-  try {
-    if (!req.file) {
-      return res.status(400).json({ success: false, message: 'No file uploaded' });
-    }
-
-    // Use HTTPS protocol if we're configured for it
-    const protocol = sslOptions ? 'https' : 'http';
-    const fileUrl = `${protocol}://${req.get('host')}/uploads/${req.file.filename}`;
-
-    // Save file reference to database
-    const newUpload = new Upload({
-      userId: req.body.userId || 'anonymous',
-      fileName: req.file.filename,
-      fileUrl: fileUrl,
-      fileType: req.file.mimetype,
-      tutor: req.body.tutor || 'general',
-      conversationId: req.body.conversationId || 'none'
-    });
-
-    await newUpload.save();
-    console.log('File uploaded:', fileUrl);
-
-    res.json({ success: true, fileUrl: fileUrl });
-  } catch (error) {
-    console.error('Upload error:', error);
-    res.status(500).json({ success: false, message: 'Server error' });
-  }
-});
-
-// Create learning content from attachment
 app.post("/api/learning-content", async (req, res) => {
   try {
     const { attachmentUrl, contentType, title, description, tutor, conversationId } = req.body;
     const userId = req.body.userId || 'anonymous';
 
-    // Generate a unique topic ID
     const topicId = `${contentType}_${Date.now()}`;
-
-    // Create the learning content
     const newContent = new LearningContent({
       title,
       description,
@@ -627,7 +528,7 @@ app.post("/api/learning-content", async (req, res) => {
       userId,
       tutor,
       topicId
-    });
+    })
 
     await newContent.save();
     console.log('Learning content created:', { title, contentType, topicId });
@@ -636,14 +537,14 @@ app.post("/api/learning-content", async (req, res) => {
       success: true,
       message: 'Learning content created successfully',
       topicId
-    });
+    })
   } catch (error) {
     console.error('Content creation error:', error);
     res.status(500).json({ success: false, message: 'Server error' });
   }
-});
+})
 
-// Get learning content by topic ID
+
 app.get("/api/learning-content/:topicId", async (req, res) => {
   try {
     const content = await LearningContent.findOne({ topicId: req.params.topicId });
@@ -659,7 +560,6 @@ app.get("/api/learning-content/:topicId", async (req, res) => {
   }
 });
 
-// Get all learning content for a user
 app.get("/api/learning-content", async (req, res) => {
   try {
     const { userId, tutor, contentType } = req.query;
@@ -676,21 +576,19 @@ app.get("/api/learning-content", async (req, res) => {
     console.error('Error fetching contents:', error);
     res.status(500).json({ success: false, message: 'Server error' });
   }
-});
+})
 
-/* ---------- start servers ---------- */
-// Start HTTP server
+
 const httpServer = http.createServer(app);
 httpServer.listen(PORT, "0.0.0.0", () => {
   console.log(`HTTP Server running on port ${PORT}`);
-});
+})
 
-// Start HTTPS server if SSL is configured
 if (sslOptions) {
   const httpsServer = https.createServer(sslOptions, app);
   httpsServer.listen(HTTPS_PORT, "0.0.0.0", () => {
     console.log(`HTTPS Server running on port ${HTTPS_PORT}`);
-  });
+  })
 } else {
   console.log("HTTPS Server not started: SSL certificates not configured");
 }
