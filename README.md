@@ -6,8 +6,8 @@ AI Mentor backend is built using Node.js and Express with MongoDB being the data
 
 ## Features
 
-Secure signup, signin, and password reset functionality. There is also independent conversation history for different subject tutors(like my Biology and Python models. The app can also track and monitor user progress on different subjects and topics. My Database is MongoDB and it store and retrieve learning content as well as user credentials and profile information. Bcrypt for password hashing, JWT authentication, secure HTTPS connection
-and CORS setup for all defined allowed domains.
+Secure signup, signin, and password reset functionality. There is also independent conversation history for different subject tutors(like my Biology and Python models. The app can also track and monitor user progress on those topics. My Database is MongoDB and it store and retrieve learning content as well as user credentials and profile information. Bcrypt for password hashing, JWT authentication, secure HTTPS connection
+and CORS setup for all allowed domains.
 
 ## Getting Started
 
