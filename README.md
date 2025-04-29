@@ -2,7 +2,7 @@
 # AI Mentor Backend (Hosted on EC2)
 
 This is the backend server of my AI Mentor of which i hosted on EC2 but this will work without that too.
-AI Mentor backend is built using Node.js and Express with MongoDB being the database. It provides RESTful APIs to support the web and mobile applications, including user authentication, conversation management, performance tracking, and OpenAI integration for AI-powered tutoring.
+AI Mentor backend is built using Node.js and Express with MongoDB being the database. It provides RESTful APIs to support the web and mobile applications, including user authentication, conversation management, performance tracking and OpenAI API.
 
 ## Features
 
