@@ -94,8 +94,6 @@ function getPerformanceModel(userId) {
   return mongoose.models[name] || mongoose.model(name, performanceSchema, "performances_" + userId);
 }
 
-const Upload = mongoose.model("Upload", uploadSchema);
-
 const learningContentSchema = new mongoose.Schema({
   title: { type: String, required: true },
   description: { type: String },
@@ -108,10 +106,6 @@ const learningContentSchema = new mongoose.Schema({
 })
 
 const LearningContent = mongoose.model("LearningContent", learningContentSchema);
-
-
-const upload = multer({ storage: storage });
-
 
 const app = express();
 app.use(express.json());
@@ -400,8 +394,12 @@ app.post("/api/performance", async (req, res) => {
           existingCard.subtopic = subtopic || existingCard.subtopic || 'general';
 
           const successRate = existingCard.correctAttempts / existingCard.attempts;
-          if (successRate > 0.8) existingCard.difficulty = Math.max(1, existingCard.difficulty - 1);
-          else if (successRate < 0.6) existingCard.difficulty = Math.min(5, existingCard.difficulty + 1);
+
+          if (successRate > 0.8) {
+            existingCard.difficulty = Math.max(1, existingCard.difficulty - 1);
+          } else if (successRate < 0.6) {
+            existingCard.difficulty = Math.min(5, existingCard.difficulty + 1);
+          }
 
           performance.cards[existingCardIndex] = existingCard;
         } else {
@@ -479,15 +477,24 @@ app.get("/api/progress/subtopics", async (req, res) => {
         })
       })
 
-      const progressPercentage = totalCards > 0
-        ? Math.min(100, Math.round((correctCards / totalCards) * 100))
-        : 0;
-
-      const masteryLevel = totalCards === 0 ? 0 :
-        progressPercentage < 40 ? 1 :
-          progressPercentage < 60 ? 2 :
-            progressPercentage < 75 ? 3 :
-              progressPercentage < 90 ? 4 : 5;
+      let progressPercentage = 0;
+      if (totalCards > 0) {
+        progressPercentage = Math.min(100, Math.round((correctCards / totalCards) * 100));
+      }
+      let masteryLevel = 0;
+      if (totalCards === 0) {
+        masteryLevel = 0;
+      } else if (progressPercentage < 40) {
+        masteryLevel = 1;
+      } else if (progressPercentage < 60) {
+        masteryLevel = 2;
+      } else if (progressPercentage < 75) {
+        masteryLevel = 3;
+      } else if (progressPercentage < 90) {
+        masteryLevel = 4;
+      } else {
+        masteryLevel = 5;
+      }
 
       return {
         subtopic,
@@ -499,14 +506,15 @@ app.get("/api/progress/subtopics", async (req, res) => {
       }
     })
 
-    const totalProgress = subtopicProgress.length > 0
-      ? Math.round(subtopicProgress.reduce((sum, item) => sum + item.progress, 0) / subtopicProgress.length)
-      : 0;
+    let totalProgress = 0;
+    if (subtopicProgress.length > 0) {
+      totalProgress = Math.round(subtopicProgress.reduce((sum, item) => sum + item.progress, 0) / subtopicProgress.length);
+    }
 
     res.json({
       subtopics: subtopicProgress,
       overall: totalProgress
-    });
+    })
 
   } catch (err) {
     console.error('Error in GET /api/progress/subtopics:', err);
@@ -558,7 +566,7 @@ app.get("/api/learning-content/:topicId", async (req, res) => {
     console.error('Error fetching content:', error);
     res.status(500).json({ success: false, message: 'Server error' });
   }
-});
+})
 
 app.get("/api/learning-content", async (req, res) => {
   try {
